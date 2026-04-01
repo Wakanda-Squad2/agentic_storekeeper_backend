@@ -1,0 +1,107 @@
+"""Parsing Agent for extracting structured transaction data."""
+
+import json
+from typing import Dict, Any, List, Optional
+from pydantic import BaseModel
+from decimal import Decimal
+from app.config import client, settings
+
+
+class ParsedTransaction(BaseModel):
+    date: Optional[str]
+    description: str
+    amount: Optional[float]
+    currency: str = "NGN"
+    vendor: Optional[str]
+    category: Optional[str]
+    reference: Optional[str]
+    line_items: Optional[List[Dict[str, Any]]]
+    total_amount: Optional[float]
+    confidence: float
+
+
+class ParsedTransactionResponse(BaseModel):
+    transactions: List[ParsedTransaction]
+    document_summary: Dict[str, Any]
+
+
+def parse_transactions(ocr_text: str, document_type: str) -> Dict[str, Any]:
+    """
+    Parse structured transaction data from OCR text and document type.
+
+    Args:
+        ocr_text: Extracted text from OCR
+        document_type: Type of document from classification
+
+    Returns:
+        Dict with parsed transaction(s) data
+    """
+    system_prompt = f"""You are a financial document parsing expert. Extract structured transaction data from the OCR text of a {document_type}.
+
+Extract the following information:
+1. Date(s) of transaction(s) in YYYY-MM-DD format
+2. Description of each transaction
+3. Amount(s) as numbers
+4. Vendor/merchant name
+5. Category of expense (rent, fuel, office_supplies, payroll, utilities, etc.)
+6. Reference/invoice numbers
+7. Individual line items if present
+8. Total amount
+
+Respond with a JSON object in this format:
+{{
+  "transactions": [{{
+    "date": "YYYY-MM-DD",
+    "description": "string",
+    "amount": 0.0,
+    "currency": "NGN",
+    "vendor": "string",
+    "category": "string",
+    "reference": "string",
+    "line_items": [{{"item": "string", "quantity": 1, "price": 0.0}}],
+    "total_amount": 0.0,
+    "confidence": 0.0
+  }}],
+  "document_summary": {{
+    "total_transactions": 0,
+    "total_amount": 0.0,
+    "vendor": "string",
+    "date_range": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}}
+  }}
+}}
+
+Extract all transactions found in the document. Use 0.0-1.0 confidence scores based on text clarity and completeness.
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=settings.ai_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": ocr_text}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1
+        )
+
+        result = json.loads(response.choices[0].message.content)
+        validated = ParsedTransactionResponse(**result)
+
+        return {
+            "success": True,
+            "transactions": [
+                {
+                    **transaction.model_dump(),
+                    "amount": float(transaction.amount or 0),
+                    "total_amount": float(transaction.total_amount or 0)
+                }
+                for transaction in validated.transactions
+            ],
+            "document_summary": validated.document_summary
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Parsing failed: {str(e)}"
+        }

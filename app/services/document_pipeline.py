@@ -1,0 +1,256 @@
+"""Document Processing Pipeline Service.
+
+Orchestrates the 9-step workflow: upload → OCR → classify → parse → validate → categorize → reconcile → save → update status
+"""
+
+import json
+import traceback
+from typing import Dict, Any, List
+from datetime import datetime
+from decimal import Decimal
+from sqlalchemy.orm import Session
+from fastapi import BackgroundTasks
+
+from app.models.document import Document
+from app.models.transaction import Transaction
+from app.mcp_tools.ocr import OCRTool
+from app.mcp_tools.database import DatabaseQueryTool
+from app import agents
+from app.database import SessionLocal
+from app.config import settings
+
+
+class DocumentPipelineError(Exception):
+    """Custom exception for pipeline errors."""
+    pass
+
+
+def process_document_pipeline(document_id: int, db: Session) -> Dict[str, Any]:
+    """
+    Process a document through the complete 9-step pipeline.
+
+    Args:
+        document_id: ID of the document to process
+        db: Database session
+
+    Returns:
+        Dict with pipeline results
+    """
+    results = {
+        "document_id": document_id,
+        "success": False,
+        "steps": {}
+    }
+
+    try:
+        # Step 0: Get document
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise DocumentPipelineError(f"Document {document_id} not found")
+
+        document.status = "processing"
+        document.updated_at = datetime.utcnow()
+        db.commit()
+
+        # Step 1: OCR
+        print(f"[Pipeline] Step 1: OCR for document {document_id}")
+        ocr_result = OCRTool.run({
+            "file_path": document.file_path,
+            "file_type": document.file_type
+        })
+        results["steps"]["ocr"] = ocr_result
+
+        if not ocr_result or not ocr_result.get("text"):
+            raise DocumentPipelineError("OCR failed to extract text")
+
+        # Step 2: Classification
+        print(f"[Pipeline] Step 2: Classification")
+        classification = agents.classify_document(ocr_result["text"])
+        results["steps"]["classification"] = classification
+
+        if not classification.get("success"):
+            raise DocumentPipelineError(f"Classification failed: {classification.get('error')}")
+
+        document.document_type = classification.get("document_type")
+
+        # Step 3: Parsing
+        print(f"[Pipeline] Step 3: Parsing transactions")
+        parsed = agents.parse_transactions(
+            ocr_result["text"],
+            classification["document_type"]
+        )
+        results["steps"]["parsing"] = parsed
+
+        if not parsed.get("success"):
+            raise DocumentPipelineError(f"Parsing failed: {parsed.get('error')}")
+
+        if not parsed.get("transactions"):
+            raise DocumentPipelineError("No transactions found in document")
+
+        # Step 4: Validation
+        print(f"[Pipeline] Step 4: Validation")
+        validation = agents.validate_transactions(parsed, ocr_result["text"])
+        results["steps"]["validation"] = validation
+
+        if not validation.get("success"):
+            raise DocumentPipelineError(f"Validation failed: {validation.get('error')}")
+
+        # Step 5-9: Process each transaction
+        print(f"[Pipeline] Steps 5-9: Processing {len(parsed['transactions'])} transactions")
+        processed_transactions = []
+
+        for idx, transaction_data in enumerate(parsed["transactions"]):
+            print(f"  Processing transaction {idx + 1}/{len(parsed['transactions'])}")
+
+            # Step 5: Categorization
+            category_result = agents.categorize_transaction(transaction_data)
+            transaction_data["category"] = category_result.get("category", "uncategorized")
+            transaction_data["category_confidence"] = category_result.get("confidence", 0.0)
+
+            # Step 6: Reconciliation
+            potential_matches = agents.find_potential_matches(
+                transaction_data, db, document.tenant_id
+            )
+            reconciliation = agents.reconcile_transaction(
+                transaction_data, potential_matches
+            )
+
+            # Step 7: Save or flag based on reconciliation
+            if reconciliation["action"] == "create_new":
+                # Step 8: Create new transaction
+                db_transaction = Transaction(
+                    tenant_id=document.tenant_id,
+                    document_id=document.id,
+                    date=datetime.strptime(transaction_data["date"], "%Y-%m-%d").date(),
+                    description=transaction_data["description"],
+                    amount=Decimal(str(transaction_data["amount"])),
+                    currency=transaction_data.get("currency", "NGN"),
+                    type=transaction_data["type"],
+                    category=transaction_data["category"],
+                    vendor=transaction_data.get("vendor"),
+                    reference=transaction_data.get("reference"),
+                    confidence=transaction_data.get("confidence", 0.0)
+                )
+                db.add(db_transaction)
+                db.flush()
+
+                processed_transaction = {
+                    "action": "created",
+                    "transaction_id": db_transaction.id,
+                    "data": transaction_data,
+                    "category": category_result,
+                    "reconciliation": reconciliation
+                }
+
+            elif reconciliation["action"] == "update_existing":
+                # Update existing transaction
+                match_id = reconciliation["matched_transaction_id"]
+                existing = db.query(Transaction).filter(Transaction.id == match_id).first()
+
+                if existing:
+                    # Update confidence and flags
+                    existing.confidence = min(existing.confidence or 0, transaction_data.get("confidence", 0.0))
+                    processed_transaction = {
+                        "action": "updated",
+                        "transaction_id": existing.id,
+                        "data": transaction_data,
+                        "category": category_result,
+                        "reconciliation": reconciliation
+                    }
+                else:
+                    processed_transaction = {
+                        "action": "error",
+                        "error": f"Matched transaction {match_id} not found",
+                        "data": transaction_data
+                    }
+
+            else:  # flag_for_review
+                # Create transaction with review flag
+                db_transaction = Transaction(
+                    tenant_id=document.tenant_id,
+                    document_id=document.id,
+                    date=datetime.strptime(transaction_data["date"], "%Y-%m-%d").date(),
+                    description=transaction_data["description"] + " [REVIEW NEEDED]",
+                    amount=Decimal(str(transaction_data["amount"])),
+                    currency=transaction_data.get("currency", "NGN"),
+                    type=transaction_data["type"],
+                    category=transaction_data["category"],
+                    vendor=transaction_data.get("vendor"),
+                    reference=transaction_data.get("reference"),
+                    confidence=transaction_data.get("confidence", 0.0) * 0.5  # Lower confidence for flagged
+                )
+                db.add(db_transaction)
+                db.flush()
+
+                processed_transaction = {
+                    "action": "flagged_for_review",
+                    "transaction_id": db_transaction.id,
+                    "data": transaction_data,
+                    "category": category_result,
+                    "reconciliation": reconciliation
+                }
+
+            processed_transactions.append(processed_transaction)
+
+        # Step 9: Update document status
+        print(f"[Pipeline] Step 9: Finalizing document")
+        document.status = "completed"
+        document.updated_at = datetime.utcnow()
+        db.commit()
+
+        results["success"] = True
+        results["processed_transactions"] = processed_transactions
+        results["total_transactions"] = len(processed_transactions)
+
+        print(f"[Pipeline] Completed successfully for document {document_id}")
+
+    except DocumentPipelineError as e:
+        print(f"[Pipeline] Error: {e}")
+        document.status = "failed"
+        document.updated_at = datetime.utcnow()
+        db.commit()
+        results["error"] = str(e)
+
+    except Exception as e:
+        print(f"[Pipeline] Unexpected error: {e}")
+        document.status = "failed"
+        document.updated_at = datetime.utcnow()
+        db.commit()
+        results["error"] = str(e)
+        results["traceback"] = traceback.format_exc() if hasattr(e, '__traceback__') else None
+
+    return results
+
+
+def process_document_in_background(document_id: int):
+    """
+    Process a document in the background (for FastAPI BackgroundTasks).
+
+    Args:
+        document_id: ID of document to process
+    """
+    db = SessionLocal()
+    try:
+        process_document_pipeline(document_id, db)
+    finally:
+        db.close()
+
+
+def enqueue_document_processing(document_id: int, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    """
+    Enqueue document processing to run in background.
+
+    Args:
+        document_id: Document ID to process
+        background_tasks: FastAPI BackgroundTasks
+
+    Returns:
+        Confirmation response
+    """
+    background_tasks.add_task(process_document_in_background, document_id)
+
+    return {
+        "success": True,
+        "message": f"Document {document_id} enqueued for processing",
+        "document_id": document_id
+    }
