@@ -49,6 +49,4 @@ uploads/
 # Logs
 *.log
 *.txt
-.claude/
-free-claude-code/
 .env
