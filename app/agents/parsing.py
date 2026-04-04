@@ -93,7 +93,8 @@ Extract all transactions found in the document. Use 0.0-1.0 confidence scores ba
                 {
                     **transaction.model_dump(),
                     "amount": float(transaction.amount or 0),
-                    "total_amount": float(transaction.total_amount or 0)
+                "total_amount": float(transaction.total_amount or 0),
+                "type": "expense"  # Default to expense for receipts/invoices
                 }
                 for transaction in validated.transactions
             ],

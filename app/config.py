@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 
 class Settings(BaseSettings):
@@ -29,8 +29,13 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# OpenRouter client
+# OpenRouter clients
 client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=settings.openrouter_api_key
+)
+
+async_client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=settings.openrouter_api_key
 )

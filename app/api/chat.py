@@ -39,7 +39,7 @@ async def chat_with_ai(
     tenant_id = int(request.tenant_id) if request.tenant_id else CURRENT_TENANT_ID
 
     # Use InsightAgent to process the question
-    insight_response = get_insight(
+    insight_response = await get_insight(
         question=request.message,
         db=db,
         tenant_id=tenant_id
