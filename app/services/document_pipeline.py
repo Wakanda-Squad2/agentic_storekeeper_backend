@@ -236,9 +236,27 @@ def process_document_in_background(document_id: int):
     Args:
         document_id: ID of document to process
     """
+    # Import inside function for subprocess context
+    from app.database import SessionLocal
+    from app.services.document_pipeline import process_document_pipeline
+
     db = SessionLocal()
     try:
         process_document_pipeline(document_id, db)
+    except Exception as e:
+        # Log error in background task
+        import traceback
+        print(f"[Background Task Error] Document {document_id}: {str(e)}")
+        traceback.print_exc()
+        # Update status to failed
+        from app.models.document import Document
+        from datetime import datetime
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if doc:
+            doc.status = "failed"
+            doc.updated_at = datetime.utcnow()
+            db.commit()
+        raise
     finally:
         db.close()
 

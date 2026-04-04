@@ -30,7 +30,7 @@ async def create_transaction(
 
     db_transaction = Transaction(
         tenant_id=tenant_id,
-        **transaction.model_dump()
+        **transaction.model_dump(exclude={'tenant_id'})
     )
 
     db.add(db_transaction)

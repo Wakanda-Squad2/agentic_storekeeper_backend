@@ -3,12 +3,23 @@
 import os
 import json
 from typing import Dict, Any
-from agents import Agent, Runner, function_tool
+from agents import Agent, Runner, function_tool, set_default_openai_client, set_default_openai_api
+from agents.models import OpenAIChatCompletionsModel
 from agents.mcp import MCPServer, MCPServerStdio
 from pydantic import BaseModel
 from decimal import Decimal
 
-from app.config import settings, client as openai_client
+from app.config import settings, async_client as openai_async_client
+
+# Configure the agents framework to use OpenRouter
+set_default_openai_client(openai_async_client)
+set_default_openai_api("chat_completions")
+
+# Create a Model object instead of using model string to avoid prefix errors
+model = OpenAIChatCompletionsModel(
+    model=settings.ai_model,
+    openai_client=openai_async_client
+)
 from app.mcp_tools.database import DatabaseQueryTool
 from sqlalchemy.orm import Session
 
@@ -179,13 +190,13 @@ Guidelines:
 
 If a query fails or returns no results, explain what was attempted and suggest how the user might rephrase their question.
 """,
-    model=settings.ai_model,
+    model=model,
     tools=[query_database],
     mcp_servers=[]
 )
 
 
-def get_insight(question: str, db: Session, tenant_id: int) -> InsightResponse:
+async def get_insight(question: str, db: Session, tenant_id: int) -> InsightResponse:
     """
     Get financial insight from natural language question.
 
@@ -223,7 +234,7 @@ If querying the database, use appropriate filters based on the question.
 """
 
         # Run the agent
-        result = Runner.run_sync(
+        result = await Runner.run(
             insight_agent,
             runner_prompt,
             max_turns=5

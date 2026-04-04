@@ -124,7 +124,7 @@ def find_potential_matches(transaction: Dict[str, Any], db: Session, tenant_id: 
 
     # Add date range (±7 days from transaction date)
     if transaction.get("date"):
-        txn_date = date.fromisoformat(transaction["date"])
+        txn_date = datetime.date.fromisoformat(transaction["date"])
         filters["start_date"] = (txn_date - datetime.timedelta(days=7)).isoformat()
         filters["end_date"] = (txn_date + datetime.timedelta(days=7)).isoformat()
 
@@ -155,7 +155,7 @@ def find_potential_matches(transaction: Dict[str, Any], db: Session, tenant_id: 
 
     # Sort by date and amount similarity, return top 10
     transactions.sort(key=lambda t: (
-        float("inf") if not t.get("date") else abs((date.fromisoformat(t["date"]) - txn_date).days),
+        float("inf") if not t.get("date") else abs((datetime.date.fromisoformat(t["date"]) - txn_date).days),
         abs(float(t.get("amount", 0)) - amount) if amount else 0
     ))
 
