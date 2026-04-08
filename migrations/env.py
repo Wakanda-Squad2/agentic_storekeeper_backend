@@ -1,3 +1,17 @@
+import os
+import sys
+
+# Project root on sys.path before any app imports (Settings reads DATABASE_URL).
+_ROOT = os.path.dirname(os.path.dirname(__file__))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from app.db_url import normalize_database_url
+
+_raw = os.environ.get("DATABASE_URL")
+if _raw:
+    os.environ["DATABASE_URL"] = normalize_database_url(_raw)
+
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
@@ -5,10 +19,6 @@ from sqlalchemy import pool
 
 from alembic import context
 
-# Import our models and database configuration
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from app.database import Base
 from app.models.document import Document
 from app.models.transaction import Transaction

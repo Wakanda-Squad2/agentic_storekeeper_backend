@@ -1,7 +1,7 @@
 # Render Blueprint — deploy API + managed PostgreSQL.
 # Docs: https://render.com/docs/blueprint-spec
 #
-# After first deploy: set OPENROUTER_API_KEY, ALLOWED_ORIGINS, and REDIS_URL (e.g. Render Key Value / Redis)
+# After first deploy: set OPENROUTER_API_KEY, ALLOWED_ORIGINS (e.g. ["https://storekeeper-andela.vercel.app"]), and REDIS_URL
 # in the Render dashboard (Environment). SECRET_KEY is generated below unless you override.
 
 databases:
