@@ -1,15 +1,31 @@
-from pydantic_settings import BaseSettings
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from openai import OpenAI, AsyncOpenAI
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     # Database
     database_url: str = "postgresql://user:password@localhost/storekeeper_db"
 
-    # JWT Settings
-    secret_key: str = "your-secret-key-here-change-in-production"
+    # JWT — set SECRET_KEY in .env (see env.example). Maps JWT signing to this field.
+    secret_key: str = Field(
+        default="your-secret-key-here-change-in-production",
+        validation_alias=AliasChoices("SECRET_KEY", "secret_key"),
+    )
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+
+    # Redis (sessions, queues, cache — wire clients where needed)
+    redis_url: str = Field(
+        default="redis://127.0.0.1:6379/0",
+        validation_alias=AliasChoices("REDIS_URL", "redis_url"),
+    )
 
     # CORS
     allowed_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
@@ -22,10 +38,6 @@ class Settings(BaseSettings):
     # AI/ML
     openrouter_api_key: str = ""
     ai_model: str = "google/gemini-2.5-flash-preview"
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
 
 
 

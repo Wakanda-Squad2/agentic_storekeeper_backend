@@ -1,4 +1,5 @@
-version: '3.8'
+# Local stack: PostgreSQL + Redis + API (migrations run inside the API container on startup).
+# Usage: copy env.example to .env, then: docker compose up --build -d
 
 services:
   api:
@@ -9,7 +10,9 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-storekeeper}:${POSTGRES_PASSWORD:-storekeeper_pass}@db:5432/${POSTGRES_DB:-storekeeper_db}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-storekeeper}:${POSTGRES_PASSWORD:-storekeeper_pass}@db:5432/${POSTGRES_DB:-storekeeper_db}
+      PORT: "8000"
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - uploads_data:/app/uploads
     depends_on:
@@ -17,6 +20,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: storekeeper-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
     restart: unless-stopped
 
   db:
@@ -30,34 +42,24 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Exec form (no shell): avoids Windows/Compose issues with $$ and CMD-SHELL.
+    # Values come from your `.env` / defaults — keep POSTGRES_USER / POSTGRES_DB in sync.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-storekeeper}"]
+      test:
+        [
+          "CMD",
+          "pg_isready",
+          "-q",
+          "-U",
+          "${POSTGRES_USER:-storekeeper}",
+          "-d",
+          "${POSTGRES_DB:-storekeeper_db}",
+        ]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 25
+      start_period: 120s
     restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    container_name: storekeeper-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-
-  # Run migrations automatically on startup
-  migrate:
-    build: .
-    container_name: storekeeper-migrate
-    env_file:
-      - .env
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-storekeeper}:${POSTGRES_PASSWORD:-storekeeper_pass}@db:5432/${POSTGRES_DB:-storekeeper_db}
-    command: alembic upgrade head
-    depends_on:
-      db:
-        condition: service_healthy
 
 volumes:
   postgres_data:
