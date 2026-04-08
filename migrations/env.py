@@ -14,8 +14,8 @@ if _raw:
 
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
 from alembic import context
 
@@ -43,9 +43,34 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def get_database_url() -> str:
+    """Prefer DATABASE_URL; otherwise alembic.ini (after set_main_option above)."""
+    u = os.environ.get("DATABASE_URL", "").strip()
+    if u:
+        return normalize_database_url(u)
+    return config.get_main_option("sqlalchemy.url")
+
+
+def ensure_render_uses_real_database() -> None:
+    if os.environ.get("RENDER") != "true":
+        return
+    u = os.environ.get("DATABASE_URL", "").strip()
+    if not u:
+        raise RuntimeError(
+            "DATABASE_URL is not set on Render. Link PostgreSQL in the blueprint or paste the "
+            "Internal/External Database URL from your Render Postgres (Environment → DATABASE_URL)."
+        )
+    if "localhost" in u or "127.0.0.1" in u:
+        raise RuntimeError(
+            "DATABASE_URL must not use localhost inside Render. Use your Render Postgres or Neon "
+            "connection string from the database dashboard, not a value copied from local .env."
+        )
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = config.get_main_option("sqlalchemy.url")
+    ensure_render_uses_real_database()
+    url = get_database_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -59,11 +84,8 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    ensure_render_uses_real_database()
+    connectable = create_engine(get_database_url(), poolclass=NullPool)
 
     with connectable.connect() as connection:
         context.configure(
